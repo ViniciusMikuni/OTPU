@@ -2,29 +2,27 @@ import tensorflow as tf
 from tensorflow.keras import layers, Input
 import numpy as np
 import tensorflow.keras.backend as K
+import tensorflow_addons as tfa
 
 
-import tensorflow as tf
-from tensorflow.keras import layers, Input
-import numpy as np
-import tensorflow.keras.backend as K
+def pairwise_distance(point_cloud): 
+    """Compute pairwise distance of a point cloud.
+    Args:
+      point_cloud: tensor (batch_size, num_points, num_dims)
+    Returns:
+      pairwise distance: (batch_size, num_points, num_points)
+    """
+    og_batch_size = point_cloud.get_shape()[0]
+    if og_batch_size == 1:
+        point_cloud = tf.expand_dims(point_cloud, 0)
 
-
-
-
-class MyHeavisideActivation(tf.keras.layers.Layer):
-  def __init__(self, num_outputs, threshold=.5, **kwargs):
-    super(MyHeavisideActivation, self).__init__(**kwargs)
-    self.num_outputs = num_outputs
-    self.threshold = threshold
-
-  def build(self, input_shape):
-    pass
-
-  def call(self, inputs):
-    return tf.cond(inputs > self.threshold, 
-                   lambda: tf.add(tf.multiply(inputs,0), 1), # set to 1
-                   lambda: tf.multiply(inputs, 0))           # set to 0
+    point_cloud_transpose = tf.transpose(point_cloud, perm=[0, 2, 1])
+    point_cloud_inner = tf.matmul(point_cloud, point_cloud_transpose)  # x.x + y.y + z.z shape: NxN
+    point_cloud_inner = -2 * point_cloud_inner
+    point_cloud_square = tf.reduce_sum(tf.square(point_cloud), axis=-1,
+                                       keepdims=True)  # from x.x, y.y, z.z to x.x + y.y + z.z
+    point_cloud_square_transpose = tf.transpose(point_cloud_square, perm=[0, 2, 1])
+    return point_cloud_square + point_cloud_inner + point_cloud_square_transpose
 
 
 def pairwise_distanceR(point_cloud, mask):
@@ -37,7 +35,6 @@ def pairwise_distanceR(point_cloud, mask):
       pairwise distance: (batch_size, num_points, num_points)
     """
     og_batch_size = point_cloud.get_shape()[0]
-    # make sure nothing bad happens in the extreme case in which you feed the network with just 1 example per mini-batch
     if og_batch_size == 1:
         point_cloud = tf.expand_dims(point_cloud, 0)
 
@@ -63,27 +60,7 @@ def pairwise_distanceR(point_cloud, mask):
     point_shift_transpose = tf.transpose(point_shift,perm=[0, 2, 1]) #Bx1xN
     zero_mask = point_shift_transpose + point_shift #when adding tensors having a dimension equal to 1, tf tiles them to make them compatible for the sum
     zero_mask = tf.where(tf.equal(zero_mask, 2000), tf.zeros_like(zero_mask), zero_mask)
-    return deltaR_matrix + zero_mask, zero_mask
-
-def pairwise_distance(point_cloud, mask): 
-    """Compute pairwise distance of a point cloud.
-    Args:
-      point_cloud: tensor (batch_size, num_points, num_dims)
-    Returns:
-      pairwise distance: (batch_size, num_points, num_points)
-    """
-    og_batch_size = point_cloud.get_shape()[0]
-    if og_batch_size == 1:
-        point_cloud = tf.expand_dims(point_cloud, 0)
-
-    point_cloud_transpose = tf.transpose(point_cloud, perm=[0, 2, 1])
-    point_cloud_inner = tf.matmul(point_cloud, point_cloud_transpose)  # x.x + y.y + z.z shape: NxN
-    point_cloud_inner = -2 * point_cloud_inner
-    point_cloud_square = tf.reduce_sum(tf.square(point_cloud), axis=-1,
-                                       keepdims=True)  # from x.x, y.y, z.z to x.x + y.y + z.z
-    point_cloud_square_transpose = tf.transpose(point_cloud_square, perm=[0, 2, 1])
-    return point_cloud_square + point_cloud_inner + point_cloud_square_transpose + mask
-
+    return deltaR_matrix + zero_mask
 
 def knn(adj_matrix, k=20):
     """Get KNN based on the pairwise distance.
@@ -114,6 +91,7 @@ def get_neighbors(point_cloud, nn_idx, k=20):
     batch_size = point_cloud_shape[0]
     num_points = point_cloud_shape[1]
     num_dims = point_cloud_shape_int[2]
+
     idx_ = tf.range(batch_size) * num_points
     idx_ = tf.reshape(idx_, [batch_size, 1, 1])
     
@@ -126,42 +104,36 @@ def get_neighbors(point_cloud, nn_idx, k=20):
 
 class AttnFeat(layers.Layer):
 
-    def __init__(self, k=10, momentum=0.99, filters_C2DNB=32,
-                 kernel_size_C2DNB=(1, 1), strides_C2DNB=(1, 1), padding_C2DNB='same',
-                 activation_NoBias_C2DNB=tf.keras.activations.relu, activation=tf.nn.leaky_relu,
+    def __init__(self, k=10, filters = 32,                 
+                 activation_NoBias=tf.keras.activations.relu,
+                 activation=tf.nn.leaky_relu,
                  expand_dims=True, name='AttnFeat', **kwargs): 
         super(AttnFeat, self).__init__(name=name, **kwargs)
         self.k = k
-        self.momentum = momentum
         self.activation = activation
-        self.filters_C2DNB = filters_C2DNB
-        self.kernel_size_C2DNB = kernel_size_C2DNB
-        self.strides_C2DNB = strides_C2DNB
-        self.padding_C2DNB = padding_C2DNB
-        self.activation_NoBias_C2DNB = activation_NoBias_C2DNB
+        self.filters = filters
+        self.activation_NoBias = activation_NoBias
         self.expand_dims = expand_dims
 
-        self.BatchNormNoBias = layers.BatchNormalization(momentum=self.momentum)
+        #self.BatchNormNoBias = layers.BatchNormalization(momentum=self.momentum)
+        self.BatchNormNoBias = tfa.layers.GroupNormalization(groups=4)
 
-        self.Conv2DEdgeFeat = layers.Conv2D(filters=self.filters_C2DNB, kernel_size=[1, 1], strides=(1, 1),
-                                            padding='valid')
+        self.Conv2DEdgeFeat = layers.Conv2D(filters=self.filters, kernel_size=1)
 
-        self.BatchNormEdgeFeat = layers.BatchNormalization(momentum=self.momentum)
+        #self.BatchNormEdgeFeat = layers.BatchNormalization(momentum=self.momentum)
+        self.BatchNormEdgeFeat = tfa.layers.GroupNormalization(groups=4)
 
-        self.Conv2DSelfAtt = layers.Conv2D(filters=1, kernel_size=[1, 1], strides=(1, 1),
-                                           padding='valid')
+        self.Conv2DSelfAtt = layers.Conv2D(filters=1, kernel_size=1)
+        self.BatchNormSelfAtt = layers.BatchNormalization(center=False, scale=False)
+        
 
-        self.BatchNormSelfAtt = layers.BatchNormalization(momentum=self.momentum)
-
-        self.Conv2DNeighAtt = layers.Conv2D(filters=1, kernel_size=[1, 1], strides=(1, 1),
-                                            padding='valid')
-
-        self.BatchNormNeighAtt = layers.BatchNormalization(momentum=self.momentum)
-
-        self.Conv2DNoBias = layers.Conv2D(filters=self.filters_C2DNB, kernel_size=self.kernel_size_C2DNB,
-                                          strides=self.strides_C2DNB, padding=self.padding_C2DNB, use_bias=False,
-                                          activation=self.activation_NoBias_C2DNB,
-                                          kernel_initializer='glorot_uniform') 
+        self.Conv2DNeighAtt = layers.Conv2D(filters=1, kernel_size=1)
+        self.BatchNormNeighAtt = layers.BatchNormalization(center=False, scale=False)
+        
+        
+        self.Conv2DNoBias = layers.Conv2D(filters=self.filters,
+                                          use_bias=False,kernel_size=1,
+                                          activation=self.activation_NoBias) 
 
     def call(self, inputs, training=None, **kwargs): 
         
@@ -175,146 +147,196 @@ class AttnFeat(layers.Layer):
         mask_neighbors = get_neighbors(tf.reshape(mask,(-1,tf.shape(mask)[1],1,1)),
                                        nn_idx=nn_idx,
                                        k=self.k)  # Group up the neighbors using the index passed on the arguments
+        
         mask_neighbors = -10000*tf.transpose(mask_neighbors,(0,1,3,2))
-        neighbors = get_neighbors(inputs, nn_idx=nn_idx,
-                                  k=self.k)  # Group up the neighbors using the index passed on the arguments
+        
+        neighbors = get_neighbors(inputs, nn_idx=nn_idx,k=self.k)  
+
 
         inputs_tiled = tf.tile(inputs, [1, 1, self.k, 1])
         edge_feature_pre = inputs_tiled - neighbors  # Make the edge features yij
 
         if 'deltaR' in kwargs:
             deltaR = kwargs['deltaR']
-            edge_feature_pre = tf.concat([edge_feature_pre,tf.expand_dims(deltaR,-1)],-1)
+            edge_feature_pre = tf.concat([edge_feature_pre,
+                                          tf.expand_dims(
+                                              tf.math.divide_no_nan(inputs_tiled[:,:,:,2],deltaR),-1),
+                                          tf.expand_dims(deltaR,-1)],-1)
 
-        #Encode the points in cloud by a 1 CNN layer, the weights are learnable parameters of this filter
         new_feature = self.Conv2DNoBias(inputs)
         new_feature = self.BatchNormNoBias(new_feature)
 
-        #Encode the edge features by a 1 CNN layer, the weights are learnable parameters of this filter
         edge_feature = self.Conv2DEdgeFeat(edge_feature_pre)
         edge_feature = self.BatchNormEdgeFeat(edge_feature)
 
-        #Create self-coefficients by passing transformed points to 1 CNN layer with output size 1
         self_attention = self.Conv2DSelfAtt(new_feature)
         self_attention = self.BatchNormSelfAtt(self_attention)
 
-        #Create local-coefficients by passing transformed edges to 1 CNN layer with output size 1
         neighbor_attention = self.Conv2DNeighAtt(edge_feature)
         neighbor_attention = self.BatchNormNeighAtt(neighbor_attention)
         
-        #Finally, create attention coefficients by summing the previously created coefficients... 
         logits = self_attention + neighbor_attention
         logits = tf.transpose(logits, [0, 1, 3, 2])
         
-        #... and by applying leaky-relu non-linearity. To align the attention coefficients, also apply softmax normalization
         coefs = tf.nn.softmax(tf.nn.leaky_relu(logits)+mask_neighbors)
-
-        #Now, each point is associated with k attention coefficients. To compute a single attention coefficient per point, perform linear comibination...
+                
         vals = tf.linalg.matmul(coefs, edge_feature)
-        #... and apply non-linearity
+
         outputs = self.activation(vals)
-        return outputs, self_attention, edge_feature
+        return outputs, edge_feature
 
 
 class GAPBlock(layers.Layer):
 
-    def __init__(self, nheads=1, k=10, momentum=0.99, filters_C2DNB=32,
-                 kernel_size_C2DNB=(1, 1), strides_C2DNB=(1, 1),
-                 padding_C2DNB='same',
-                 activation_NoBias_C2DNB=tf.keras.activations.relu,
+    def __init__(self, nheads=1, k=10, filters=32,
+                 activation_NoBias=tf.keras.activations.relu,
                  activation=tf.keras.activations.relu,
                  expand_dims=True,
                  name='GAPBlock', **kwargs):  
         super(GAPBlock, self).__init__(name=name, **kwargs)
         self.k = k
         self.nheads = nheads
-        self.momentum=momentum
         self.attn_feat_layers = []
         self.Name=name
         for i in range(nheads):
             self.attn_feat_layers.append(
-                AttnFeat(k=self.k, momentum=self.momentum, filters_C2DNB=filters_C2DNB, kernel_size_C2DNB=kernel_size_C2DNB,
-                         strides_C2DNB=strides_C2DNB, padding_C2DNB=padding_C2DNB, expand_dims=expand_dims,
-                         activation_NoBias_C2DNB=activation_NoBias_C2DNB, activation=activation))
+                AttnFeat(k=self.k, filters=filters, 
+                         expand_dims=expand_dims,
+                         activation_NoBias=activation_NoBias,
+                         activation=activation)
+            )
 
     def call(self, inputs, training=None, **kwargs): 
         nn_idx, layer_input,  mask = inputs 
         attns = []
         local_features = []
         for i in range(self.nheads):
-            out, self_att, edge_feat = self.attn_feat_layers[i](inputs=layer_input,nn_idx=nn_idx, mask=mask,**kwargs)
+            out, edge_feat = self.attn_feat_layers[i](inputs=layer_input,nn_idx=nn_idx, mask=mask,**kwargs)
             attns.append(out)  # This is the edge feature * att. coeff. activated by Leaky RELU, one per particle
             local_features.append(edge_feat)  # Those are the yij
 
-        neighbors_features = tf.concat(attns, axis=-1)
-        # neighbors_features = tf.concat([tf.expand_dims(point_cloud, axis=-2), neighbors_features], axis=-1) 
-        locals_transform = tf.reduce_mean(tf.concat(local_features, axis=-1), axis=-2, keepdims=True)
-        return tf.squeeze(neighbors_features, axis=2), tf.squeeze(locals_transform, axis=2), tf.squeeze(self_att, axis=2)
+        neighbors_features = tf.reduce_mean(tf.concat(attns, axis=-1),-2)
+        locals_transform = tf.reduce_mean(tf.concat(local_features, axis=-1), axis=-2)
+        return neighbors_features, locals_transform
 
 
-def ABCNet(npoint,nfeat=1,momentum=0.99):
+
+
+def ABCNet(npoint,nfeat=1):
     # Define the shapes of the multidimensionanl inputs for the pointcloud (per particle variables)
     # Always leave out the batchsize when specifying the shape
     inputs = Input(shape=(npoint,nfeat))
     k = 20 
-    mask = tf.where(inputs[:,:,2]==0,K.ones_like(inputs[:,:,2]),K.zeros_like(inputs[:,:,2]))
-    idx_list = list(range(nfeat))
-    idx_list.pop(1)
-    idx_list.pop(-1)
-    adj_1, zero_matrix = pairwise_distanceR(inputs[:,:,:3], mask)
+    mask = inputs[:,:,-1]
+    masked_inputs = layers.Masking(mask_value=0.0)(inputs[:,:,:-1])
+    adj_1 = pairwise_distanceR(inputs[:,:,:3], mask)
     nn_idx,dist = knn(adj_1, k=k)
-
-    neighbors_features_1, graph_features_1, attention_features_1 = GAPBlock(k=k, filters_C2DNB=16, padding_C2DNB = 'valid', name='Gap1')((nn_idx, tf.gather(inputs,idx_list,axis=-1),mask),deltaR=dist)
-    x = layers.Conv1D(filters = 64, kernel_size = 1, strides = 1, padding='valid', kernel_initializer='glorot_uniform', activation='relu')(neighbors_features_1)
-    x = layers.Conv1D(filters = 64, kernel_size = 1, strides = 1, padding='valid', kernel_initializer='glorot_uniform', activation='relu')(x)
-    x = layers.BatchNormalization(momentum=momentum)(x)
-    x01=x
     
-    # adj_2 = pairwise_distance(x, zero_matrix)
-    # adj_2 = adj_1 #keep same pairs for faster computation
+    idx_list = list(range(nfeat))
+
+    chs = tf.where((masked_inputs[:,:,2]!=0)&(masked_inputs[:,:,7]==0),
+                   -tf.ones_like(masked_inputs[:,:,7]),
+                   tf.zeros_like(masked_inputs[:,:,7]))
+
+    chs = chs + tf.cast(masked_inputs[:,:,8]>0,tf.float32)*tf.abs(masked_inputs[:,:,7])    
+    chs = tf.expand_dims(chs,-1)
     
-    neighbors_features_2, graph_features_2, attention_features_2 = GAPBlock(k=k, momentum=momentum, filters_C2DNB=32, padding_C2DNB = 'valid', name='Gap2')((nn_idx,x, mask))
-    x = layers.Conv1D(filters = 128, kernel_size = 1, strides = 1, padding='valid', kernel_initializer='glorot_uniform', activation='relu')(neighbors_features_2)        
-    #x = layers.BatchNormalization(momentum=momentum)(x)
-    x = layers.Conv1D(filters = 128, kernel_size = 1, strides = 1, padding='valid', kernel_initializer='glorot_uniform', activation='relu')(x)
-    x = layers.BatchNormalization(momentum=momentum)(x)
-    x11 = x
-    
-    #perform aggregation. Aggregation is a concat tf.operation
-    x = tf.concat([x01, x11, graph_features_1, graph_features_2], axis = -1)
+    idx_list.pop(8) #hardfrac is a truth label available only in delphes
+    idx_list.pop(6) #delete puppi from the list
+    idx_list.pop(1) #delete phi from the feature list after calculating the distances
 
-    x = layers.Conv1D(filters = 256, kernel_size = 1, strides = 1, padding='valid', kernel_initializer='glorot_uniform', activation='relu')(x)        
-    x = layers.BatchNormalization(momentum=momentum)(x)
+    #x = tf.gather(masked_inputs,idx_list,axis=-1)
+    x = layers.Dense(128,activation=None)(tf.gather(tf.concat([masked_inputs,chs],-1),idx_list,axis=-1))
+    x = layers.LeakyReLU(alpha=0.01)(layers.Dense(64,activation=None)(x))
+    input_x = x
+    num_layers = 2
+    for i in range(num_layers):
+        x = layers.LayerNormalization(epsilon=1e-6)(x)
+        if i ==0:
+            x = GAPBlock(k=k, filters=64, name='Gap{}'.format(i))((nn_idx,x,mask),deltaR=dist)[0] + x
+        else:
+            x = GAPBlock(k=k, filters=64, name='Gap{}'.format(i))((nn_idx,x,mask))[0] + x
+        x = layers.Dense(128,activation='gelu')(x)
+        x = layers.Dense(64,activation='gelu')(x)
+        
+        # adj = pairwise_distance(x)
+        # nn_idx,dist = knn(adj, k=k)
 
-    x_prime = x
-    
-    #Perform AveragePooling
-    x = tf.reduce_mean(x, axis=1,keepdims=True)
-    
-    expand=tf.tile(x, [1, npoint, 1]) #after pooling, recover x tensor's second dimension by tiling
 
-    x = tf.concat(values = [expand, x_prime], axis=-1)
+    #perform aggregation. Aggregation is a concat tf.operation    
+    # x = tf.concat(to_combine, axis = -1)
+    # x = layers.LayerNormalization(epsilon=1e-6)(x)    
+    # x = layers.Dense(512, activation='relu')(x)        
+    # x_prime = x    
+    # x = tf.reduce_mean(x, axis=1,keepdims=True)    
+    # expand=tf.tile(x, [1, npoint, 1]) #after pooling, recover x tensor's second dimension by tiling
+    # x = tf.concat(values = [expand, x_prime], axis=-1)
 
-    x = layers.Conv1D(filters = 128, kernel_size = 1, strides = 1, padding='valid', kernel_initializer='glorot_uniform', activation='relu')(x)
-    # x = layers.Dropout(0.6)(x)
-    # x = layers.BatchNormalization(momentum=momentum)(x)
-
-    outputs = layers.Conv1D(filters = 1, kernel_size = 1, strides = 1,  padding='valid', kernel_initializer='glorot_uniform', activation='hard_sigmoid')(x)
-
+        
+    x = layers.LayerNormalization(epsilon=1e-6)(x)
+    x = layers.LeakyReLU(alpha=0.01)(layers.Dense(256,activation=None)(x + input_x))
+    x = layers.LeakyReLU(alpha=0.01)(layers.Dense(128,activation=None)(x))
+    outputs = layers.Dense(1, activation='sigmoid')(x)
     return inputs,outputs
 
 
-def SWD(y_true, y_pred,nprojections=128):
+
+    # neighbors_features_1, graph_features_1, attention_features_1 = GAPBlock(k=k, filters_C2DNB=32, padding_C2DNB = 'valid', name='Gap1')((nn_idx,x,mask),deltaR=dist)
+    # x = layers.Conv1D(filters = 64, kernel_size = 1, strides = 1, padding='valid', kernel_initializer='glorot_uniform', activation='relu')(neighbors_features_1)
+    # x = layers.Conv1D(filters = 32, kernel_size = 1, strides = 1, padding='valid', kernel_initializer='glorot_uniform', activation='relu')(x)
+    # x = layers.BatchNormalization(momentum=momentum)(x)
+    # x01=x
+    
+        
+    # neighbors_features_2, graph_features_2, attention_features_2 = GAPBlock(k=k, momentum=momentum, filters_C2DNB=64, padding_C2DNB = 'valid', name='Gap2')((nn_idx,x, mask))
+    # x = layers.Conv1D(filters = 128, kernel_size = 1, strides = 1, padding='valid', kernel_initializer='glorot_uniform', activation='relu')(neighbors_features_2)        
+    # x = layers.Conv1D(filters = 64, kernel_size = 1, strides = 1, padding='valid', kernel_initializer='glorot_uniform', activation='relu')(x)
+    # x = layers.BatchNormalization(momentum=momentum)(x)
+    # x11 = x
+    
+    # #perform aggregation. Aggregation is a concat tf.operation
+    # x = tf.concat([x01, x11, graph_features_1, graph_features_2], axis = -1)
+
+    # x = layers.Conv1D(filters = 512, kernel_size = 1, strides = 1, padding='valid', kernel_initializer='glorot_uniform', activation='relu')(x)        
+    # x = layers.BatchNormalization(momentum=momentum)(x)
+
+    # x_prime = x
+    
+    # #Perform AveragePooling
+    # x = tf.reduce_mean(x, axis=1,keepdims=True)
+    
+    # expand=tf.tile(x, [1, npoint, 1]) #after pooling, recover x tensor's second dimension by tiling
+
+    # x = tf.concat(values = [expand, x_prime], axis=-1)
+    # #x = expand + x_prime
+
+
+    # x = layers.Conv1D(filters = 256, kernel_size = 1, strides = 1, padding='valid', kernel_initializer='glorot_uniform', activation='relu')(x)
+    # x = layers.Conv1D(filters = 64, kernel_size = 1, strides = 1, padding='valid', kernel_initializer='glorot_uniform', activation='relu')(x)
+    # outputs = layers.Conv1D(filters = 1, kernel_size = 1, strides = 1,  padding='valid', kernel_initializer='glorot_uniform', activation='sigmoid')(x)
+
+    # return inputs,outputs
+
+
+#@tf.function
+def SWD(y_true, y_pred,nprojections=128,NSWD=4):
     pu_pfs = y_true[:,:,:y_true.shape[2]//2]
     nopu_pfs = y_true[:,:,y_true.shape[2]//2:]
 
     charge_pu_mask = tf.cast(tf.expand_dims(tf.abs(pu_pfs[:,:,-1])>0,-1),tf.float32)
-    charge_nopu_mask = tf.cast(tf.expand_dims(tf.abs(nopu_pfs[:,:,-1])>0,-1),tf.float32)    
-    nopu_pfs = nopu_pfs[:,:,:4]
-    pu_pfs = pu_pfs[:,:,:4]*y_pred
+    charge_nopu_mask = tf.cast(tf.expand_dims(tf.abs(nopu_pfs[:,:,-1])>0,-1),tf.float32)
+
+    def _get_cartesian(particles):
+      mask = tf.cast(particles[:,:,2]!=0,tf.float32)
+      px = tf.exp(particles[:,:,2])*tf.math.cos(particles[:,:,1])*mask
+      py = tf.exp(particles[:,:,2])*tf.math.sin(particles[:,:,1])*mask
+      pz = tf.exp(particles[:,:,2])*tf.math.sinh(particles[:,:,0])*mask
+      
+      vec = tf.stack([px,py,pz],-1)
+      return vec
 
 
-
+    
     def _getSWD(pu_pf,nopu_pf):    
         proj = tf.random.normal(shape=[tf.shape(pu_pf)[0],tf.shape(pu_pf)[2], nprojections])
         proj *= tf.math.rsqrt(tf.reduce_sum(tf.square(proj), 1, keepdims=True))
@@ -327,38 +349,38 @@ def SWD(y_true, y_pred,nprojections=128):
         wdist = tf.reduce_mean(tf.square(p1 - p2),-1)
         return wdist
     
-    def _getMET(particles):
-        px = tf.abs(particles[:,:,2])*tf.math.cos(particles[:,:,1])
-        py = tf.abs(particles[:,:,2])*tf.math.sin(particles[:,:,1])
-        met = tf.stack([px,py],-1)
-        # print(met)
-        return met
-
-
-    met_pu = tf.reduce_sum(_getMET(pu_pfs)*y_pred,1)
-    met_nopu = tf.reduce_sum(_getMET(nopu_pfs),1)
-    met_mse = tf.reduce_sum(tf.square(met_pu[:,:2] - met_nopu[:,:2]),-1)
-
     
-    # nopu_pfs = tf.expand_dims(nopu_pfs[:,:,3],-1)
-    # pu_pfs = tf.expand_dims(pu_pfs[:,:,3],-1)*y_pred
+    #get back the particles in cartesian coordinates
+    met_pu = tf.reduce_sum(_get_cartesian(pu_pfs)[:,:,:2]*y_pred,1)
+    met_nopu = tf.reduce_sum(_get_cartesian(nopu_pfs)[:,:,:2],1)
+    met_mse = tf.reduce_sum(tf.square(met_pu - met_nopu),-1)
+
+    pu_pfs = pu_pfs[:,:,:NSWD]*y_pred
+    nopu_pfs = nopu_pfs[:,:,:NSWD]
+
+    # pu_pfs = _get_cartesian(pu_pfs[:,:,:NSWD])*y_pred
+    # nopu_pfs = _get_cartesian(nopu_pfs[:,:,:NSWD])
     
-    # nopu_pfs = nopu_pfs
-    # pu_pfs = pu_pfs*y_pred
+    wdist = _getSWD(pu_pfs,nopu_pfs)
+    
+    return  1e3*tf.reduce_mean(wdist) + tf.reduce_mean(met_mse)/1e3
 
-
-#     wdist = _getSWD(pu_pfs,nopu_pfs)
-#     notzero = tf.reduce_sum(tf.where(wdist>0,tf.ones_like(wdist),tf.zeros_like(wdist)))    
-#     return 1e3*tf.reduce_sum(wdist)/tf.reduce_sum(notzero)
-# # #+tf.reduce_mean(met_mse)
+    # 1e3*tf.reduce_mean(puppi_loss) +
+    
+    #     wdist = _getSWD(pu_pfs,nopu_pfs)
+    #     notzero = tf.reduce_sum(tf.where(wdist>0,tf.ones_like(wdist),tf.zeros_like(wdist)))    
+    #     return 1e3*tf.reduce_sum(wdist)/tf.reduce_sum(notzero)
+    # # #+tf.reduce_mean(met_mse)
 
     wdist_charge = _getSWD(pu_pfs*charge_pu_mask,nopu_pfs*charge_nopu_mask)
     wdist_neutral = _getSWD(pu_pfs*tf.cast(charge_pu_mask==0,tf.float32),
                             nopu_pfs*tf.cast(charge_nopu_mask==0,tf.float32))
-    wdist = _getSWD(pu_pfs,nopu_pfs)
+
+    return 1e3*tf.reduce_mean(wdist_charge) + 1e3*tf.reduce_mean(wdist_neutral)
 
 
-    return 1e3*tf.reduce_mean(wdist_neutral) + 1e3*tf.reduce_mean(wdist_charge) + 1e3*tf.reduce_mean(wdist)
+
+#+ tf.reduce_mean(met_mse)/1e2
 
     
 def sort_rows(matrix, num_rows):

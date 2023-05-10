@@ -63,7 +63,7 @@ def FindNPUJets(ref,parts):
     #print(resolution.shape)
     return resolution
 
-def GetBootErr(vals,quantile_list,n=100):
+def GetBootErr(vals,quantile_list,n=1000):
     res = []
     for i in range(n):
         boot = np.random.choice(vals,vals.shape[0])
@@ -162,6 +162,39 @@ def PlotResolution(data_dict,plot_folder,process,npv=None):
                 quantiles = np.quantile(res[:,0][mask],quantile_list)
                 etapt_res[name][j,i] = (quantiles[1]-quantiles[0])*0.5
 
+    save_json = False
+    if save_json:
+        clean_dict = {
+            'int': feed_dict,
+            'pt_res':pt_res,
+            'eta_res':eta_res,
+            'pt_err':pt_err,
+            'eta_err':eta_err,
+        }
+        np.save(os.path.join(plot_folder,'info.npy'),clean_dict)
+
+    use_puma = True
+    if use_puma:
+
+        puma = np.load(os.path.join(plot_folder,'info.npy'),allow_pickle=True).item()
+        quantiles = np.quantile(puma['int']['abc'],quantile_list)
+        label_names['puma'] = "{}: {:.3f}".format(utils.name_translate['puma'],
+                                                  (quantiles[1]-quantiles[0])*0.5)
+        
+        
+        puma_dict = {'puma':puma['int']['abc']}
+        feed_dict.update(puma_dict)
+        puma_dict = {'puma':puma['pt_res']['abc']}
+        pt_res.update(puma_dict)
+        puma_dict = {'puma':puma['pt_err']['abc']}
+        pt_err.update(puma_dict)
+        puma_dict = {'puma':puma['eta_res']['abc']}
+        eta_res.update(puma_dict)
+        puma_dict = {'puma':puma['eta_err']['abc']}
+        eta_err.update(puma_dict)        
+        
+        
+                
     binning=np.linspace(-1,1,20)
     fig,ax0 = utils.HistRoutine(feed_dict,xlabel='Jet energy resolution', ylabel= 'Normalized entries',plot_ratio=False,binning=binning,label_names=label_names)    
     fig.savefig('{}/resolution_{}.pdf'.format(plot_folder,process), bbox_inches='tight')
@@ -280,12 +313,12 @@ def PlotMET(data_dict,plot_folder,process):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_folder', default='/global/cfs/cdirs/m3929/SCRATCH/PU/PU/vertex_info', help='Folder containing data and MC files')        
-    #parser.add_argument('--data_folder', default='/pscratch/sd/v/vmikuni/PU/vertex_info', help='Folder containing data and MC files')
+    #parser.add_argument('--data_folder', default='/global/cfs/cdirs/m3929/SCRATCH/PU/PU/vertex_info', help='Folder containing data and MC files')        
+    parser.add_argument('--data_folder', default='/pscratch/sd/v/vmikuni/PU/vertex_info', help='Folder containing data and MC files')    
     parser.add_argument('--dataset', default=None, help='dataset to load')
     parser.add_argument('--model', default=None, help='model checkpoint to load')
-
     parser.add_argument('--config', default='config.json', help='Basic config file containing general options')
+    parser.add_argument('--multi', action='store_true', default=False,help='Plot met training together with standard training')
     
     
     flags = parser.parse_args()
@@ -303,10 +336,29 @@ if __name__ == '__main__':
 
     file_name = os.path.join(flags.data_folder,"JetInfo_{}_{}".format(checkpoint,sample))
 
-    sets = ['nopu_jet','abc_jet','puppi_jet','gen_jet']
-    feed_dict = utils.loadSample(file_name,sets)    
-    MET_set = ['MET_nopu','MET_abc','MET_puppi','MET_gen']
+    sets = ['nopu_jet','puppi_jet','abc_jet','gen_jet']
+    feed_dict = utils.loadSample(file_name,sets)
+    if flags.multi:
+        nevts = feed_dict['abc_jet'].shape[0]
+        sets = ['abc_jet']
+        for name in ['met','sup']:
+            alt_file_name = os.path.join(flags.data_folder,"JetInfo_{}_{}_{}".format(checkpoint,name,sample))
+            feed_dict.update(utils.loadSample(alt_file_name,sets,
+                                              nevts = nevts,alternative_name = 'abc_{}_jet'.format(name)))
+
+    
+    MET_set = ['MET_nopu','MET_puppi','MET_abc','MET_gen']
     feed_dict_met = utils.loadSample(file_name,MET_set)
+
+    if flags.multi:
+        nevts = feed_dict_met['MET_abc'].shape[0]
+        sets = ['MET_abc']
+        for name in ['met','sup']:
+            alt_file_name = os.path.join(flags.data_folder,"JetInfo_{}_{}_{}".format(checkpoint,name,sample))
+            feed_dict_met.update(utils.loadSample(alt_file_name,sets,
+                                                  nevts = nevts,alternative_name = 'MET_abc_{}'.format(name)))
+
+    
     npv=utils.loadSample(file_name,['NPV'])
     plot_folder = os.path.join("..","plots_{}".format(checkpoint))
     
@@ -323,10 +375,10 @@ if __name__ == '__main__':
         print(plot)
         plot_routines[plot](feed_dict,plot_folder,sample.replace(".h5",""),npv=npv['NPV'])
 
-    # met_routines = {
-    #     'MET hist':PlotMET,
-    #     }
+    met_routines = {
+        'MET hist':PlotMET,
+        }
 
-    # for plot in met_routines:
-    #     print(plot)
-    #     met_routines[plot](feed_dict_met,plot_folder,sample.replace(".h5",""))
+    for plot in met_routines:
+        print(plot)
+        met_routines[plot](feed_dict_met,plot_folder,sample.replace(".h5",""))

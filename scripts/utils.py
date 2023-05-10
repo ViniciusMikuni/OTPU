@@ -8,7 +8,7 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 import matplotlib.ticker as mtick
-
+from keras.utils.np_utils import to_categorical
 
 def split_data(data,nevts,frac=0.8):
     data = data.cache().shuffle(nevts)
@@ -20,6 +20,9 @@ line_style = {
     'nopu':'dotted',
     'truth':'dotted',
     'abc': "-",
+    'abc_met': "-",
+    'abc_sup': "dotted",
+    'puma': "-",
     'puppi': "-",
     'gen':'dotted',
     
@@ -29,6 +32,9 @@ colors = {
     'nopu':'black',
     'truth':'black',
     'abc': '#7570b3',
+    'abc_met': '#1b9e77',
+    'abc_sup': '#e7298a',
+    'puma': 'gray',
     'puppi': "#d95f02",
     'gen':'#1b9e77',    
 }
@@ -38,17 +44,25 @@ name_translate={
     'nopu':"0 PU",
     'truth':"0 PU",
     'abc': "TOTAL",
+    'abc_sup': "ABCNet",
+    'abc_met': r"TOTAL + $\lambda$",
+    'puma':'PUMA',
     'puppi': "PUPPI",
     'gen':"Gen",
 
 }
 
 
-def loadSample(file_name,sets):
+def loadSample(file_name,sets,nevts=-1,alternative_name=None):
     feed_dict = {}
     with h5.File(os.path.join(file_name),"r") as h5f:
         for dataset in sets:
-            feed_dict[dataset] = h5f[dataset][:]
+            if alternative_name is None:
+                feed_dict[dataset] = h5f[dataset][:]
+            else:
+                feed_dict[alternative_name] = h5f[dataset][:]
+            if nevts >0:
+                feed_dict[alternative_name] = feed_dict[alternative_name][:nevts]
     return feed_dict
 
 
@@ -118,8 +132,9 @@ def PlotRoutine(feed_dict,xlabel='',ylabel='',reference_name='nopu',plot_ratio=F
             ratio = 100*np.divide(-feed_dict[reference_name]+feed_dict[plot],feed_dict[reference_name])
             ax1.plot(xaxis,ratio,color=colors[plot],marker='o',ms=10,lw=0,markerfacecolor='none',markeredgewidth=3)
 
-    #plt.axvline(x=140,color='r', linestyle='-',linewidth=1)
+    # plt.axvline(x=140,color='r', linestyle='-',linewidth=1)
     ax0.legend(loc='best',fontsize=16,ncol=1)
+    # ax0.set_ylim([0.03,0.07])
     if plot_ratio:
         FormatFig(xlabel = "", ylabel = ylabel,ax0=ax0)
 
@@ -161,6 +176,7 @@ def HistRoutine(feed_dict,xlabel='',ylabel='',reference_name='gen',logy=False,bi
     
     fig,gs = SetGrid(ratio=plot_ratio) 
     ax0 = plt.subplot(gs[0])
+    ax0.yaxis.set_major_formatter(mtick.FormatStrFormatter('%.1f'))
     if plot_ratio:
         plt.xticks(fontsize=0)
         ax1 = plt.subplot(gs[1],sharex=ax0)
@@ -180,6 +196,10 @@ def HistRoutine(feed_dict,xlabel='',ylabel='',reference_name='gen',logy=False,bi
         if weights is not None:
             dist,_,_=ax0.hist(feed_dict[plot],bins=binning,label=label_names[plot],linestyle=line_style[plot],color=colors[plot],density=True,histtype="step",weights=weights[plot])
         else:
+            # print(label_names[plot])
+            # print(line_style[plot])
+            # print(colors[plot])
+            
             dist,_,_=ax0.hist(feed_dict[plot],bins=binning,label=label_names[plot],linestyle=line_style[plot],color=colors[plot],density=True,histtype="step")
         
         if plot_ratio:
@@ -226,19 +246,59 @@ def EvalLoader(file_name,nevts):
             data_dict[key] = h5f[key][:nevts].astype(np.float32)
     return data_dict
 
-def ApplyPrep(param_dict,data,use_log=False):
+
+def CalcPrep(param_dict ,data,use_log=True):
     shape = data.shape
     data_flat = data.copy().reshape((-1,shape[-1]))
+    mask = data_flat[:,2]>0
     if use_log:
         data_flat[:,2]=np.ma.log(data_flat[:,2]).filled(0)
         data_flat[:,3]=np.ma.log(data_flat[:,3]).filled(0)
         data_flat[:,4]=np.ma.log(data_flat[:,4]).filled(0)
         data_flat[:,5]=np.ma.log(data_flat[:,5]).filled(0)
+
+    mean_particle = np.average(data_flat[:,3:6],axis=0,weights=mask)
+    mean=mean_particle
+    std=np.sqrt(np.average((data_flat[:,3:6] - mean_particle)**2,axis=0,weights=mask))
+    
+    for i in range(3,6):
+        #clip e, dx,dz
+        min_val  = mean[i-3] - 4*std[i-3]
+        max_val = mean[i-3] + 4*std[i-3]
+        data_flat[:,i][data_flat[:,i]<min_val]=min_val
+        data_flat[:,i][data_flat[:,i]>max_val]=max_val
+        
+    mean_particle = np.average(data_flat[:,3:6],axis=0,weights=mask)
+    data_dict = {
+        'max':np.max(data_flat[:,3:6],0).tolist(),
+        'min':np.min(data_flat[:,3:6],0).tolist(),
+        'mean':mean_particle.tolist(),
+        'std':np.sqrt(np.average((data_flat[:,3:6] - mean_particle)**2,axis=0,weights=mask)).tolist(),
+    }
+
+    SaveJson(param_dict,data_dict)
+    print("Done")
+
+def ApplyPrep(param_dict,data,use_log=True):
+    shape = data.shape
+    data_flat = data.copy().reshape((-1,shape[-1]))
+    mask = data_flat[:,2]>0
+    if use_log:
+        data_flat[:,2]=np.ma.log(data_flat[:,2]).filled(0)
+        data_flat[:,3]=np.ma.log(data_flat[:,3]).filled(0)
+        data_flat[:,4]=np.ma.log(data_flat[:,4]).filled(0)
+        data_flat[:,5]=np.ma.log(data_flat[:,5]).filled(0)
+
+
+    for i in range(3,6):
+        #clip e, dx,dz
+        data_flat[:,i][data_flat[:,i]<param_dict['min'][i-3]]=param_dict['min'][i-3]
+        data_flat[:,i][data_flat[:,i]>param_dict['max'][i-3]]=param_dict['max'][i-3]
         
     #keep zeros
-    mask = data_flat!=0
-    data_flat = (data_flat-param_dict['mean'][:shape[-1]])/param_dict['std'][:shape[-1]]
-    data_flat*=mask
+    data_flat[:,3:6] = (data_flat[:,3:6]-param_dict['mean'])/param_dict['std']
+    
+    data_flat[:,3:6]*=np.expand_dims(mask,-1)
     
     return data_flat.reshape(shape)
 
@@ -255,32 +315,14 @@ def Preprocess(name,raw_data):
     '''Preprocess the data'''
 
     if 'PID' in name:
-        unique_pid = [0,11,13,22,211,321,2212]
-        #unique_pid = [-2212,-321,-211,-13,-11,11,13,22,211,321,2212]
+        #unique_pid = [0,11,13,22,211,321,2212]
+        unique_pid = [0, 11,13,22,211,321,2212]
         for i, unique in enumerate(unique_pid):
-            raw_data[np.abs(raw_data)==unique] = i+1
-        return raw_data/len(unique_pid)
+            raw_data[np.abs(raw_data)==unique] = i*1.0
+        
+        return raw_data
     else:    
         return np.array(raw_data)
-
-# def Preprocess(name,raw_data):
-#     '''Preprocess the data'''
-#     if 'Eta' in name or 'Phi' in name or 'PuppiW' in name or 'Charge' in name:
-#         #print("nothing to do")
-#         #no modification
-#         return np.array(raw_data)
-#     elif 'PT' in name or 'E' in name:
-#         print("take log",name)
-#         return np.ma.log10(raw_data).filled(0)
-#     elif 'PID' in name:
-#         unique_pid = [-2212,-321,-211,-13,-11,11,13,22,211,321,2212]
-#         for i, unique in enumerate(unique_pid):
-#             raw_data[raw_data==unique] = i+1
-#         return raw_data/len(unique_pid)
-#     else:
-#         #D0, Dz
-#         #print("log and sign")
-#         return np.sign(raw_data)*np.ma.log10(np.abs(raw_data)).filled(0)/10.0
     
 if __name__ == "__main__":
     #Preprocessing of the input files: conversion to cartesian coordinates + zero-padded mask generation
@@ -288,11 +330,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
         
     parser.add_argument('--sample', default='ZJets', help='Physics sample to load')
-    parser.add_argument('--base_path', default='/global/cfs/cdirs/m3929/PU/', help='Path to load files')
+    parser.add_argument('--base_path', default='/pscratch/sd/v/vmikuni/PU/vertex_info', help='Path to load files')
     parser.add_argument('--out_path', default='/pscratch/sd/v/vmikuni/PU/vertex_info', help='Path to load files')
     flags = parser.parse_args()
     
-    #sample_name = 'DiJet'
+    # sample_name = 'DiJet'
     # sample_name = 'TTBar'
     #sample_name = 'WJets_HighPT'
     # sample_name = 'ZJets'
@@ -305,14 +347,14 @@ if __name__ == "__main__":
     # out_path = '/pscratch/sd/v/vmikuni/PU/vertex_info'
 
     
-    features = ['Eta','Phi','PT','E','D0','DZ','PuppiW','PID','Charge','hardfrac']
+    features = ['Eta','Phi','PT','E','D0','DZ','PuppiW','Charge','hardfrac','PID']
     pu_features = ["pu_pfs_{}".format(feat) for feat in features]
     nopu_features = ["nopu_pfs_{}".format(feat) for feat in features]
     genpart_branches = ['Eta','Phi','PT','E','Charge','PID']
     gen_info = ["nopu_gen_{}".format(gen) for gen in genpart_branches]
     high_level = ['nopu_genmet_MET','nopu_genmet_Phi','pu_npv_GenVertex_size']
     
-    file_list = ['{}_outfile_{}.root'.format(flags.sample,i) for i in range(25,26)]
+    file_list = ['{}_outfile_{}.root'.format(flags.sample,i) for i in range(2,5)]
     
     merged_file = {}
     
@@ -330,14 +372,10 @@ if __name__ == "__main__":
     def _merger(features,ndim=2):
         array=[]
         for feat in features:
-            array.append(merged_file[feat])
-        if ndim ==2:            
-            return np.transpose(np.array(array).astype(np.float32),[1,0])
-        else:
-            return np.transpose(np.array(array).astype(np.float32),[1,2,0])
+            array.append(np.array(merged_file[feat]))
+
+        return np.stack(array,-1).astype(np.float32)
             
-
-
     
     high_array = _merger(high_level)
     gen_array = _merger(gen_info,ndim=3)
@@ -350,16 +388,20 @@ if __name__ == "__main__":
     
     #Preprocess training data prior to training
     for feat in nopu_features + pu_features:
-        merged_file[feat] = Preprocess(feat,merged_file[feat])
-
+        if 'PID' in feat:
+            merged_file[feat] = Preprocess(feat,merged_file[feat])
+            
     #Fix the PID for 0-padded particles
     nopu_array = _merger(nopu_features,ndim=3)
-    nopu_array[(nopu_array[:,:,-3]==1.0/7)&(nopu_array[:,:,0]==0.0)]=0
+    nopu_array[(nopu_array[:,:,-1]==0)&(nopu_array[:,:,2]==0.0),-1]=7
     pu_array = _merger(pu_features,ndim=3)
-    pu_array[(pu_array[:,:,-3]==1.0/7)&(pu_array[:,:,0]==0.0)]=0
+    pu_array[(pu_array[:,:,-1]==0)&(pu_array[:,:,2]==0.0),-1]=7
 
-    
-    #Apply CHS Only to charged particles
+    pu_array = np.concatenate(
+        [pu_array[:,:,:-1],to_categorical(pu_array[:,:,-1], num_classes=8)],-1)
+    nopu_array = np.concatenate(
+        [nopu_array[:,:,:-1],to_categorical(nopu_array[:,:,-1], num_classes=8)],-1)
+    # Apply CHS Only to charged particles
     # pu_array[:,:,-1]*=np.abs(pu_array[:,:,-2])
     # nopu_array[:,:,-1]*=np.abs(nopu_array[:,:,-2])
     

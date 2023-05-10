@@ -12,15 +12,6 @@ import awkward as ak
 import itertools
 import matplotlib.pyplot as plt
 
-
-def SaveH5(weights,pu_part,nopu_part):
-    with h5.File(os.path.join(flags.data_folder,"Small_{}.h5".format(dataset)),"w") as h5f:
-        dset = h5f.create_dataset('ABCNet', data=weights)
-        dset = h5f.create_dataset('pu', data=pu_part)
-        dset = h5f.create_dataset('no_pu', data=nopu_part)
-        
-    input("Saved")
-
 def get_thrust(jets,parts):    
     part_pt = np.sqrt(parts["px"]**2 + parts["py"]**2)
     part_phi = np.arctan2(parts["py"],parts["px"])
@@ -29,6 +20,15 @@ def get_thrust(jets,parts):
     dr = (part_eta-jets['eta'])**2 + (part_phi-jets['phi'])**2
     thrust = np.sum(dr*z,-1)
     return thrust
+
+
+def SaveH5(weights,pu_part,nopu_part):
+    with h5.File(os.path.join(flags.data_folder,"Small_{}.h5".format(dataset)),"w") as h5f:
+        dset = h5f.create_dataset('ABCNet', data=weights)
+        dset = h5f.create_dataset('pu', data=pu_part)
+        dset = h5f.create_dataset('no_pu', data=nopu_part)
+        
+    input("Saved")
 
 def Plot2D(weights,pu,gen,checkpoint,name=''):
     utils.SetStyle()
@@ -44,19 +44,19 @@ def Plot2D(weights,pu,gen,checkpoint,name=''):
     phi_x = 0.5*(phi_binning[:-1] + phi_binning[1:])
 
 
-    etaphi_frac, xedges, yedges = np.histogram2d(pu[:,:,0].flatten(), pu[:,:,1].flatten(),
-                                                 weights=(weights*pu[:,:,3]).flatten(), bins=(eta_binning, phi_binning))
-    gen_frac,_,_ = np.histogram2d(gen[:,:,0].flatten(), gen[:,:,1].flatten(), weights=gen[:,:,3].flatten(),bins=(eta_binning, phi_binning))
+    etaphi_frac, xedges, yedges = np.histogram2d(pu[:,:,:1].flatten(), pu[:,:,2].flatten(),
+                                                 weights=(weights*pu[:,:,0]).flatten(), bins=(eta_binning, phi_binning))
+    gen_frac,_,_ = np.histogram2d(gen[:,:,:1].flatten(), gen[:,:,2].flatten(), weights=gen[:,:,0].flatten(),bins=(eta_binning, phi_binning))
     etaphi_frac/=gen_frac
     
-    etaphi_frac_n, xedges, yedges = np.histogram2d(pu[:,:,0].flatten(), pu[:,:,1].flatten(),
-                                                 weights=(weights*pu[:,:,3]*(pu[:,:,7]==0)).flatten(), bins=(eta_binning, phi_binning))
-    gen_frac,_,_ = np.histogram2d(gen[:,:,0].flatten(), gen[:,:,1].flatten(), weights=(gen[:,:,3]*(gen[:,:,7]==0)).flatten(),bins=(eta_binning, phi_binning))
+    etaphi_frac_n, xedges, yedges = np.histogram2d(pu[:,:,:1].flatten(), pu[:,:,2].flatten(),
+                                                 weights=(weights*pu[:,:,0]*(pu[:,:,6]==0)).flatten(), bins=(eta_binning, phi_binning))
+    gen_frac,_,_ = np.histogram2d(gen[:,:,:1].flatten(), gen[:,:,2].flatten(), weights=(gen[:,:,0]*(gen[:,:,6]==0)).flatten(),bins=(eta_binning, phi_binning))
     etaphi_frac_n/=gen_frac
     
-    etaphi_frac_c, xedges, yedges = np.histogram2d(pu[:,:,0].flatten(), pu[:,:,1].flatten(),
-                                                 weights=(weights*pu[:,:,3]*(pu[:,:,7]!=0)).flatten(), bins=(eta_binning, phi_binning))
-    gen_frac,_,_ = np.histogram2d(gen[:,:,0].flatten(), gen[:,:,1].flatten(), weights=(gen[:,:,3]*(gen[:,:,7]!=0)).flatten(),bins=(eta_binning, phi_binning))
+    etaphi_frac_c, xedges, yedges = np.histogram2d(pu[:,:,:1].flatten(), pu[:,:,2].flatten(),
+                                                 weights=(weights*pu[:,:,0]*(pu[:,:,7]!=0)).flatten(), bins=(eta_binning, phi_binning))
+    gen_frac,_,_ = np.histogram2d(gen[:,:,:1].flatten(), gen[:,:,2].flatten(), weights=(gen[:,:,0]*(gen[:,:,6]!=0)).flatten(),bins=(eta_binning, phi_binning))
     etaphi_frac_c/=gen_frac
 
 
@@ -87,6 +87,7 @@ def Plot2D(weights,pu,gen,checkpoint,name=''):
         ax.set_xlabel(r'$\phi$',fontsize=20)
         if not os.path.exists(plot_folder):
             os.makedirs(plot_folder)
+
         fig.savefig('{}/efrac_2D_{}.pdf'.format(plot_folder,sample))
     print("done")
 
@@ -110,7 +111,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
         
-    parser.add_argument('--data_folder', default='/pscratch/sd/v/vmikuni/PU/vertex_info', help='Folder containing data and MC files')
+    parser.add_argument('--data_folder', default='/pscratch/sd/v/vmikuni/PU/vertex_info/PUMA', help='Folder containing data and MC files')
     #parser.add_argument('--data_folder', default='/global/cscratch1/sd/vmikuni/PU/vertex_info', help='Folder containing data and MC files')
     #parser.add_argument('--data_folder', default='/global/cfs/cdirs/m3929/SCRATCH/PU/PU/vertex_info', help='Folder containing data and MC files')
     parser.add_argument('--dataset', default=None, help='dataset to load')
@@ -128,60 +129,57 @@ if __name__ == '__main__':
         dataset = flags.dataset
     NPART=dataset_config['NPART']
 
+    #file_list = ['{}_{}.h5'.format(flags.dataset,ifile) for ifile in range(122,135)]
+    file_list = ['{}_{}.h5'.format(flags.dataset,ifile) for ifile in range(40,49)]
+    data = []
+    puppi = []
+    puma = []
+    label = []
+    gen = []
+    for f in file_list:
+        data.append(utils.EvalLoader(os.path.join(flags.data_folder,f),flags.nevts)['data'])
+        gen.append(utils.EvalLoader(os.path.join(flags.data_folder,f),flags.nevts)['gen'])
+        puppi.append(utils.EvalLoader(os.path.join(flags.data_folder,f),flags.nevts)['puppiw'])
+        puma.append(utils.EvalLoader(os.path.join(flags.data_folder,f),flags.nevts)['PUMA'])
+        label.append(utils.EvalLoader(os.path.join(flags.data_folder,f),flags.nevts)['labels'])
+        
+    data = np.concatenate(data)
+    gen = np.concatenate(gen)
+    puppi_weights = np.concatenate(puppi)
+    puma_weights = np.concatenate(puma)
+    label = np.expand_dims(np.concatenate(label),-1)
+    
+    # Plot2D(puma_weights,data,gen,"PUMA",name='PUMA_{}'.format(dataset))
+    # Plot2D(puppi_weights,data,gen,"PUMA",name='PUPPI_{}'.format(dataset))
+    # input()
 
     
-    if flags.model is None:
-        checkpoint = dataset_config['CHECKPOINT_NAME']
-    else:
-        checkpoint = flags.model
-
-
-    checkpoint_folder = '../checkpoints_{}'.format(checkpoint)
-    data = utils.EvalLoader(os.path.join(flags.data_folder,dataset),flags.nevts)
-    inputs,outputs = ABCNet(npoint=NPART,nfeat=dataset_config['SHAPE'][2])
-    model = Model(inputs=inputs,outputs=outputs)
-    model.load_weights('{}/{}'.format(checkpoint_folder,'checkpoint'))
-    abcnet_weights = model.predict(utils.ApplyPrep(preprocessing,data['pu_part'][:,:NPART]),batch_size=5)
-
-    #abcnet_weights[abcnet_weights<1e-3]=0
-
-    #abcnet_weights = model.predict(data['pu_part'][:,:NPART],batch_size=10)
-    puppi_weights = data['pu_part'][:,:NPART,6]
-    # chs_weights = data['pu_part'][:,:NPART,-1]
-    # chs_weights[data['pu_part'][:,:NPART,-2]==0]=1
-
-    Plot2D(np.squeeze(abcnet_weights),data['pu_part'],data['nopu_part'],checkpoint,name='ABCNet_{}'.format(dataset))
-    Plot2D(puppi_weights,data['pu_part'],data['nopu_part'],checkpoint,name='PUPPI_{}'.format(dataset))
-    # SaveH5(np.squeeze(abcnet_weights)[:10],data['pu_part'][:10],data['nopu_part'][:10])
     def _convert_kinematics(data,is_gen=False):
         four_vec = data[:,:,:3]
-        mask = data[:,:,2] != 0
+        mask = data[:,:,0] != 0
         #eta,phi,pT,E
         #convert to cartesian coordinates (px,py,pz,E)
         cartesian = np.zeros(four_vec.shape,dtype=np.float32)
-        cartesian[:,:,0] += np.abs(four_vec[:,:,2])*np.cos(four_vec[:,:,1])
-        cartesian[:,:,1] += np.abs(four_vec[:,:,2])*np.sin(four_vec[:,:,1])
-        cartesian[:,:,2] += np.abs(four_vec[:,:,2])*np.ma.sinh(four_vec[:,:,0]).filled(0)
-        # cartesian[:,:,3] = four_vec[:,:,3]
-        #print(cartesian)
+        cartesian[:,:,0] += np.abs(four_vec[:,:,0])*np.cos(four_vec[:,:,2])
+        cartesian[:,:,1] += np.abs(four_vec[:,:,0])*np.sin(four_vec[:,:,2])
+        cartesian[:,:,2] += np.abs(four_vec[:,:,0])*np.ma.sinh(four_vec[:,:,1]).filled(0)
         return cartesian
     
-    nopu_set = _convert_kinematics(data['nopu_part'])
-    gen_set =  _convert_kinematics(data['gen_part'],is_gen=True)
-    abc_set = _convert_kinematics(data['pu_part'][:,:NPART])*(abcnet_weights)
-    # data['pu_part'][:,:NPART,2] = data['pu_part'][:,:NPART,2]*np.squeeze(abcnet_weights)
-    # abc_set = _convert_kinematics(data['pu_part'][:,:NPART])
-    puppi_set = _convert_kinematics(data['pu_part'][:,:NPART])*np.expand_dims(puppi_weights,-1)
+    nopu_set = _convert_kinematics(data)*label
+    gen_set =  _convert_kinematics(gen,is_gen=True)
+    abc_set = _convert_kinematics(data)*np.expand_dims(puma_weights,-1)
+    puppi_set = _convert_kinematics(data)*np.expand_dims(puppi_weights,-1)
 
 
-    del data['nopu_part'], data['pu_part']
+    del data, gen, label
     
     dict_dataset = {}
-    dict_dataset['NPV'] = data['high_level'][:,-1]
+    dict_dataset['NPV'] = np.zeros(puppi_set.shape[0])
     dict_dataset['MET_gen'] = GetMET(gen_set)
     dict_dataset['MET_nopu'] = GetMET(nopu_set)
     dict_dataset['MET_puppi'] = GetMET(puppi_set)
     dict_dataset['MET_abc'] = GetMET(abc_set)
+
     
     def _cluster(data):
         jetdef = fastjet.JetDefinition(fastjet.antikt_algorithm, 0.4)
@@ -220,7 +218,7 @@ if __name__ == '__main__':
         print(dset)
         dict_dataset[dset] = _dict_data(sets[dset],njets=9)
         
-    with h5.File(os.path.join(flags.data_folder,"JetInfo_{}_{}".format(checkpoint,dataset)),"w") as h5f:
+    with h5.File(os.path.join(flags.data_folder,"JetInfo_{}_{}.h5".format("PUMA",dataset)),"w") as h5f:
         for key in dict_dataset:
             dset = h5f.create_dataset(key, data=dict_dataset[key])
             

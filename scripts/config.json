@@ -1,12 +1,12 @@
 {
-    'FILES':['DiJet_raw.h5','VBFHinv_raw.h5','TTBar_raw.h5'],
-    'SHAPE':[-1,9000,10],
+    'FILES':['DiJet_raw.h5','TTBar_raw.h5','VBFHinv_raw.h5'],
+    'SHAPE':[-1,9000,17],
     'BATCH':8,
-    'LR':1e-3,
-    'MAXEPOCH':1000,
-    'EARLYSTOP':30,
-    'NSWD':9,
+    'LR':0.0005,
+    'MAXEPOCH':100,
+    'EARLYSTOP':100,
+    'NSWD':4,
     'NPART':9000,
     'PREPFILE':'preprocessing_raw.json',
-    'CHECKPOINT_NAME':'SWDPU_NSWD4_EMD'
+    'CHECKPOINT_NAME':'SWDPU_NSWD4_EMD_PRL_met'
 }
