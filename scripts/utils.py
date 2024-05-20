@@ -8,7 +8,7 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 import matplotlib.ticker as mtick
-
+from tqdm import tqdm
 
 def split_data(data,nevts,frac=0.8):
     data = data.cache().shuffle(nevts)
@@ -22,7 +22,6 @@ line_style = {
     'abc': "-",
     'puppi': "-",
     'gen':'dotted',
-    
 }
 
 colors = {
@@ -219,8 +218,7 @@ def DataLoader(file_name,nevts):
     return pu,nopu
 
 def EvalLoader(file_name,nevts):
-    data_dict = {}
-    
+    data_dict = {}    
     with h5.File(file_name,"r") as h5f:
         for key in h5f:
             data_dict[key] = h5f[key][:nevts].astype(np.float32)
@@ -251,36 +249,22 @@ def SaveJson(save_file,data):
     with open(save_file,'w') as f:
         json.dump(data, f)
 
-def Preprocess(name,raw_data):    
-    '''Preprocess the data'''
+def Preprocess(data,npart):
+    #Sort particles by pT and then pick top npart
+    pt_sort = np.argsort(-data[:,:,2],1)
+    data = np.take_along_axis(data, pt_sort[:,:,None], axis=1)[:,:npart]
+    mask = data[:,:,2] != 0.0
 
-    if 'PID' in name:
-        unique_pid = [0,11,13,22,211,321,2212]
-        #unique_pid = [-2212,-321,-211,-13,-11,11,13,22,211,321,2212]
-        for i, unique in enumerate(unique_pid):
-            raw_data[np.abs(raw_data)==unique] = i+1
-        return raw_data/len(unique_pid)
-    else:    
-        return np.array(raw_data)
+    unique_pid = [11,13,22,211,321,2212]
+    pid_array = np.zeros([data.shape[0],npart,len(unique_pid)])
 
-# def Preprocess(name,raw_data):
-#     '''Preprocess the data'''
-#     if 'Eta' in name or 'Phi' in name or 'PuppiW' in name or 'Charge' in name:
-#         #print("nothing to do")
-#         #no modification
-#         return np.array(raw_data)
-#     elif 'PT' in name or 'E' in name:
-#         print("take log",name)
-#         return np.ma.log10(raw_data).filled(0)
-#     elif 'PID' in name:
-#         unique_pid = [-2212,-321,-211,-13,-11,11,13,22,211,321,2212]
-#         for i, unique in enumerate(unique_pid):
-#             raw_data[raw_data==unique] = i+1
-#         return raw_data/len(unique_pid)
-#     else:
-#         #D0, Dz
-#         #print("log and sign")
-#         return np.sign(raw_data)*np.ma.log10(np.abs(raw_data)).filled(0)/10.0
+    for i, unique in enumerate(unique_pid):
+        pid_array[:,:,i] = np.abs(data[:,:,-1]) == unique
+        print(np.sum(pid_array[:,:,i]))
+    
+    #Concatenate new PID array and delete old one
+    data = np.concatenate([data[:,:,:-1],pid_array],-1)
+    return data
     
 if __name__ == "__main__":
     #Preprocessing of the input files: conversion to cartesian coordinates + zero-padded mask generation
@@ -288,8 +272,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
         
     parser.add_argument('--sample', default='ZJets', help='Physics sample to load')
-    parser.add_argument('--base_path', default='/global/cfs/cdirs/m3929/PU/', help='Path to load files')
+    parser.add_argument('--base_path', default='/global/cfs/cdirs/m3929/SCRATCH/PU/PU/vertex_info', help='Path to load files')
     parser.add_argument('--out_path', default='/pscratch/sd/v/vmikuni/PU/vertex_info', help='Path to load files')
+    parser.add_argument('--npart', type=int,default=3200, help='Maximum number of particles to use')
     flags = parser.parse_args()
     
     #sample_name = 'DiJet'
@@ -298,27 +283,23 @@ if __name__ == "__main__":
     # sample_name = 'ZJets'
     # sample_name = 'VBFHinv'
 
-    # base_path = '/global/cfs/cdirs/m3929/PU/'
-    # base_path = '/pscratch/sd/v/vmikuni/PU/vertex_info'
-    # out_path = '/pscratch/sd/v/vmikuni/PU/'
-    # out_path = '/global/cscratch1/sd/vmikuni/PU'
-    # out_path = '/pscratch/sd/v/vmikuni/PU/vertex_info'
-
-    
-    features = ['Eta','Phi','PT','E','D0','DZ','PuppiW','PID','Charge','hardfrac']
+    #'hardfrac'
+    features = ['Eta','Phi','PT','E','D0','DZ','PuppiW','hardfrac','Charge','PID']
+    #features = ['PT']
     pu_features = ["pu_pfs_{}".format(feat) for feat in features]
     nopu_features = ["nopu_pfs_{}".format(feat) for feat in features]
     genpart_branches = ['Eta','Phi','PT','E','Charge','PID']
     gen_info = ["nopu_gen_{}".format(gen) for gen in genpart_branches]
     high_level = ['nopu_genmet_MET','nopu_genmet_Phi','pu_npv_GenVertex_size']
-    
-    file_list = ['{}_outfile_{}.root'.format(flags.sample,i) for i in range(25,26)]
-    
+
+    file_list = [os.path.join(flags.base_path, file) for file in os.listdir(flags.base_path) if "{}_outfile".format(flags.sample) in file]
+
+    #file_list = [file_list[0]]
+
     merged_file = {}
     
-    print("merging files")
-    for sample in file_list:
-        file_path = os.path.join(flags.base_path,sample)
+
+    for file_path in tqdm(file_list):
         temp_file = uproot.open(file_path)['events']
         for feat in gen_info + nopu_features + pu_features + high_level:
             if feat in merged_file:
@@ -336,36 +317,65 @@ if __name__ == "__main__":
         else:
             return np.transpose(np.array(array).astype(np.float32),[1,2,0])
             
-
-
     
     high_array = _merger(high_level)
-    gen_array = _merger(gen_info,ndim=3)
+    gen_array = _merger(gen_info,ndim=3) #maximum number of gen particles to be considered
     neutrino_id = [12,14,16]
     mask = (np.abs(gen_array[:,:,-1]) == neutrino_id[0]) | (np.abs(gen_array[:,:,-1]) == neutrino_id[1]) | (np.abs(gen_array[:,:,-1]) == neutrino_id[2])
 
     #Mask neutrinos out from gen particles
     gen_array[mask]=0
 
-    
-    #Preprocess training data prior to training
-    for feat in nopu_features + pu_features:
-        merged_file[feat] = Preprocess(feat,merged_file[feat])
-
     #Fix the PID for 0-padded particles
     nopu_array = _merger(nopu_features,ndim=3)
-    nopu_array[(nopu_array[:,:,-3]==1.0/7)&(nopu_array[:,:,0]==0.0)]=0
     pu_array = _merger(pu_features,ndim=3)
-    pu_array[(pu_array[:,:,-3]==1.0/7)&(pu_array[:,:,0]==0.0)]=0
+
+    nopu_array = Preprocess(nopu_array,npart = flags.npart)
+    pu_array = Preprocess(pu_array,npart = flags.npart)
+
+    #print(pu_array)
+    
+    #Apply CHS Only to charged particles: use true flag multiplied by charge
+    pu_array[:,:,7]*=np.abs(pu_array[:,:,8])
+    nopu_array[:,:,7]*=np.abs(nopu_array[:,:,8])
+
+    print("Total number of events {}".format(pu_array.shape[0]))
+    
+    test_size=0.2
+    validation_size=0.1
+
+    indices = np.arange(pu_array.shape[0])
+    np.random.shuffle(indices)
 
     
-    #Apply CHS Only to charged particles
-    # pu_array[:,:,-1]*=np.abs(pu_array[:,:,-2])
-    # nopu_array[:,:,-1]*=np.abs(nopu_array[:,:,-2])
+    pu_array = pu_array[indices]
+    nopu_array = nopu_array[indices]
+    gen_array = gen_array[indices]
+    high_array = high_array[indices]
+
+    n = pu_array.shape[0]
+    val_end = int(n * validation_size)
+    test_end = val_end + int(n * test_size)
     
-    with h5.File(os.path.join(flags.out_path,'{}_raw.h5'.format(flags.sample)),'w') as fh5:
-        dset = fh5.create_dataset('high_level', data=high_array)
-        dset = fh5.create_dataset('gen_part', data=gen_array)
-        dset = fh5.create_dataset('pu_part', data=pu_array)
-        dset = fh5.create_dataset('nopu_part', data=nopu_array)
+    
+    with h5.File(os.path.join(flags.out_path,'val_{}.h5'.format(flags.sample)),'w') as fh5:
+        dset = fh5.create_dataset('high_level', data=high_array[:val_end])
+        dset = fh5.create_dataset('gen_part', data=gen_array[:val_end])
+        dset = fh5.create_dataset('pu_part', data=pu_array[:val_end])
+        dset = fh5.create_dataset('nopu_part', data=nopu_array[:val_end])
+                
+
+    with h5.File(os.path.join(flags.out_path,'test_{}.h5'.format(flags.sample)),'w') as fh5:
+        dset = fh5.create_dataset('high_level', data=high_array[val_end:test_end])
+        dset = fh5.create_dataset('gen_part', data=gen_array[val_end:test_end])
+        dset = fh5.create_dataset('pu_part', data=pu_array[val_end:test_end])
+        dset = fh5.create_dataset('nopu_part', data=nopu_array[val_end:test_end])
+
+
+    with h5.File(os.path.join(flags.out_path,'train_{}.h5'.format(flags.sample)),'w') as fh5:
+        dset = fh5.create_dataset('high_level', data=high_array[test_end:])
+        dset = fh5.create_dataset('gen_part', data=gen_array[test_end:])
+        dset = fh5.create_dataset('pu_part', data=pu_array[test_end:])
+        dset = fh5.create_dataset('nopu_part', data=nopu_array[test_end:])
+
                 

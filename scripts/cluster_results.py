@@ -21,22 +21,16 @@ def SaveH5(weights,pu_part,nopu_part):
         
     input("Saved")
 
-def get_thrust(jets,parts):
-    
-    part_pt = np.sqrt(parts["px"]**2 + parts["py"]**2)
-    part_phi = np.arctan2(parts["py"],parts["px"])
-    part_eta = np.arcsinh(parts["pz"]/part_pt)
-    z = part_pt/jets['pt']
-    dr = (part_eta-jets['eta'])**2 + (part_phi-jets['phi'])**2
-    thrust = np.sum(dr*z,-1)
-    return thrust
-
 def Plot2D(weights,pu,gen,checkpoint,name=''):
     utils.SetStyle()
     eta_binning = np.linspace(-4,4,25)
     phi_binning = np.linspace(-3.1,3.1,25)
     #pu = pu_part*weights
     plot_folder = os.path.join("..","plots_{}".format(checkpoint))
+    if not os.path.exists(plot_folder):
+        # Create the folder
+        os.makedirs(plot_folder)
+
     etaphi_frac = np.zeros((eta_binning.shape[0]-1,phi_binning.shape[0]-1))
     etaphi_frac_n = np.zeros((eta_binning.shape[0]-1,phi_binning.shape[0]-1))
     etaphi_frac_c = np.zeros((eta_binning.shape[0]-1,phi_binning.shape[0]-1))
@@ -86,8 +80,10 @@ def Plot2D(weights,pu,gen,checkpoint,name=''):
         #ax.set_xscale('log')
         ax.set_ylabel(r'$\eta$',fontsize=20)
         ax.set_xlabel(r'$\phi$',fontsize=20)
+
+        
         fig.savefig('{}/efrac_2D_{}.pdf'.format(plot_folder,sample))
-    print("done")
+    print("Finished 2D plot")
 
 def GetMET(parts):
     '''
@@ -109,9 +105,9 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
         
-    #parser.add_argument('--data_folder', default='/pscratch/sd/v/vmikuni/PU/vertex_info', help='Folder containing data and MC files')
+    parser.add_argument('--data_folder', default='/pscratch/sd/v/vmikuni/PU/vertex_info', help='Folder containing data and MC files')
     #parser.add_argument('--data_folder', default='/global/cscratch1/sd/vmikuni/PU/vertex_info', help='Folder containing data and MC files')
-    parser.add_argument('--data_folder', default='/global/cfs/cdirs/m3929/SCRATCH/PU/PU/vertex_info', help='Folder containing data and MC files')
+    #parser.add_argument('--data_folder', default='/global/cfs/cdirs/m3929/SCRATCH/PU/PU/vertex_info', help='Folder containing data and MC files')
     parser.add_argument('--dataset', default=None, help='dataset to load')
     parser.add_argument('--model', default=None, help='model checkpoint to load')
     parser.add_argument('--nevts', type=int,default=-1, help='Number of events to load')
@@ -137,21 +133,20 @@ if __name__ == '__main__':
 
     checkpoint_folder = '../checkpoints_{}'.format(checkpoint)
     data = utils.EvalLoader(os.path.join(flags.data_folder,dataset),flags.nevts)
-    inputs,outputs = ABCNet(npoint=NPART,nfeat=dataset_config['SHAPE'][2])
+    inputs,outputs = ABCNet(nfeat=dataset_config['SHAPE'][2])
     model = Model(inputs=inputs,outputs=outputs)
-    model.load_weights('{}/{}'.format(checkpoint_folder,'checkpoint'))
+    model.load_weights('{}/{}'.format(checkpoint_folder,'checkpoint')).expect_partial()
     abcnet_weights = model.predict(utils.ApplyPrep(preprocessing,data['pu_part'][:,:NPART]),batch_size=5)
+    print("Evaluated ABCNet over {} events".format(abcnet_weights.shape[0]))
+    print("TOTAL weights",abcnet_weights)
+    #abcnet_weights[abcnet_weights<1e-3]=0 In case you wanna apply a cut to the output values
 
-    #abcnet_weights[abcnet_weights<1e-3]=0
-
-    #abcnet_weights = model.predict(data['pu_part'][:,:NPART],batch_size=10)
-    puppi_weights = data['pu_part'][:,:NPART,-4]
-    chs_weights = data['pu_part'][:,:NPART,-1]
-    chs_weights[data['pu_part'][:,:NPART,-2]==0]=1
+    #PUPPI index is hardcoded, be careful!
+    puppi_weights = data['pu_part'][:,:NPART,6]
 
     Plot2D(np.squeeze(abcnet_weights),data['pu_part'],data['nopu_part'],checkpoint,name='ABCNet_{}'.format(dataset))
     Plot2D(puppi_weights,data['pu_part'],data['nopu_part'],checkpoint,name='PUPPI_{}'.format(dataset))
-    # SaveH5(np.squeeze(abcnet_weights)[:10],data['pu_part'][:10],data['nopu_part'][:10])
+    
     def _convert_kinematics(data,is_gen=False):
         four_vec = data[:,:,:3]
             
@@ -195,7 +190,6 @@ if __name__ == '__main__':
         jets["pt"] = np.sqrt(jets["px"]**2 + jets["py"]**2)
         jets["phi"] = np.arctan2(jets["py"],jets["px"])
         jets["eta"] = np.arcsinh(jets["pz"]/jets["pt"])
-        jets['thrust'] = get_thrust(jets,part)
 
         jets=fastjet.sorted_by_pt(jets) 
         return jets[:,::-1]
@@ -204,18 +198,16 @@ if __name__ == '__main__':
 
     def _dict_data(jets,njets):        
         cluster = _cluster(jets)
-        dataset = np.zeros((len(cluster.pt.to_list()),njets,5),dtype=np.float32)
-
+        dataset = np.zeros((len(cluster.pt.to_list()),njets,4),dtype=np.float32)
         dataset[:,:,0]+=np.array(list(itertools.zip_longest(*cluster.pt.to_list(), fillvalue=0))).T[:,:njets]
         dataset[:,:,1]+=np.array(list(itertools.zip_longest(*cluster.eta.to_list(), fillvalue=0))).T[:,:njets]
         dataset[:,:,2]+=np.array(list(itertools.zip_longest(*cluster.phi.to_list(), fillvalue=0))).T[:,:njets]
         dataset[:,:,3]+=np.array(list(itertools.zip_longest(*cluster.E.to_list(), fillvalue=0))).T[:,:njets]
-        dataset[:,:,4]+=np.array(list(itertools.zip_longest(*cluster.thrust.to_list(), fillvalue=0))).T[:,:njets]
         return dataset
     
     for dset in sets:
-        print(dset)
-        dict_dataset[dset] = _dict_data(sets[dset],njets=9)
+        print("Processing" dset)
+        dict_dataset[dset] = _dict_data(sets[dset],njets=9) #maximum number of jets
         
     with h5.File(os.path.join(flags.data_folder,"JetInfo_{}_{}".format(checkpoint,dataset)),"w") as h5f:
         for key in dict_dataset:

@@ -11,25 +11,8 @@ import h5py as h5
 import utils
 from ABCNet import ABCNet, SWD
 
+import gc
 tf.random.set_seed(1)
-
-def _convert_kinematics(data):
-    four_vec = data[:,:,:4]        
-    #convert to cartesian coordinates (px,py,pz,E)
-    cartesian = np.zeros(four_vec.shape,dtype=np.float32)
-    cartesian[:,:,0] = np.abs(four_vec[:,:,2])*np.cos(four_vec[:,:,1])
-    cartesian[:,:,1] = np.abs(four_vec[:,:,2])*np.sin(four_vec[:,:,1])
-    cartesian[:,:,2] = np.abs(four_vec[:,:,2])*np.ma.sinh(four_vec[:,:,0]).filled(0)
-    cartesian[:,:,3] = four_vec[:,:,3]
-    #print(cartesian)
-    return cartesian
-
-def _getMET(particles):
-    px = np.abs(particles[:,:,2])*np.cos(particles[:,:,1])
-    py = np.abs(particles[:,:,2])*np.sin(particles[:,:,1])
-    met = np.concatenate([np.sum(px,1,keepdims=True),np.sum(py,1,keepdims=True)],-1)
-    return met
-
 
 if __name__ == '__main__':
     hvd.init()
@@ -44,7 +27,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
         
     parser.add_argument('--data_folder', default='/pscratch/sd/v/vmikuni/PU/vertex_info', help='Folder containing data and MC files')
-    # parser.add_argument('--data_folder', default='/global/cscratch1/sd/vmikuni/PU', help='Folder containing data and MC files')
     #parser.add_argument('--data_folder', default='/global/cfs/cdirs/m3929/SCRATCH/PU/PU/vertex_info', help='Folder containing data and MC files')
     parser.add_argument('--nevts', type=float,default=-1, help='Number of events to load')
     parser.add_argument('--config', default='config.json', help='Config file with training parameters')
@@ -65,49 +47,46 @@ if __name__ == '__main__':
 
     
     NSWD = dataset_config['NSWD'] #SWD is calculated considering only NSWD features
-    NPART = dataset_config['NPART'] #SWD is calculated considering only NSWD features
-    for iset, dataset in enumerate(dataset_config['FILES']):
-        data_,label_ = utils.DataLoader(
-            os.path.join(flags.data_folder,dataset),flags.nevts)
 
-        if iset ==0:
-            data = data_[:,:NPART]
-            label = label_[:,:NPART]
-        else:
-            data = np.concatenate((data,data_[:,:NPART]),0)
-            label=np.concatenate((label,label_[:,:NPART]),0)
-    # first_data = data[0]
-    # print(first_data[(first_data[:,-2]==0)&(first_data[:,2]!=0),:6])
-    # input()
-    data = utils.ApplyPrep(preprocessing,data)
-    label = utils.ApplyPrep(preprocessing,label)
-    
-    # data[:,:,1]=np.sin(data[:,:,1])
-    # print(data[[data[:,:,-1]==0]])
-    # input()
-    data_size = data.shape[0]
-    data_label = data[:,:,:NSWD].copy()
-    #data_label[data_label==0]=10
-    #*np.expand_dims((data[:,:,-2]==0),-1).astype(np.float32)
-    label = label[:,:,:NSWD]
-    #label[label==0]=10
-    #*np.expand_dims((label[:,:,-2]==0),-1).astype(np.float32)
-        
-    dataset = tf.data.Dataset.from_tensor_slices((data,np.concatenate([data_label,label],-1)))
-    train_data, test_data = utils.split_data(dataset,data_size,flags.frac)
-    del dataset, data, label, data_label
+    train_data = [utils.DataLoader(os.path.join(flags.data_folder,'train_'+dataset),flags.nevts)[0] for dataset in dataset_config['FILES']]
+    train_data = np.concatenate(train_data)
+    train_label = [utils.DataLoader(os.path.join(flags.data_folder,'train_'+dataset),flags.nevts)[1] for dataset in dataset_config['FILES']]
+    train_label = np.concatenate(train_label)
+
+
+    val_data = [utils.DataLoader(os.path.join(flags.data_folder,'val_'+dataset),flags.nevts)[0] for dataset in dataset_config['FILES']]
+    val_data = np.concatenate(val_data)
+    val_label = [utils.DataLoader(os.path.join(flags.data_folder,'val_'+dataset),flags.nevts)[1] for dataset in dataset_config['FILES']]
+    val_label = np.concatenate(val_label)
+                
+    train_data = utils.ApplyPrep(preprocessing,train_data)
+    val_data = utils.ApplyPrep(preprocessing,val_data)
+    train_label = utils.ApplyPrep(preprocessing,train_label)
+    val_label = utils.ApplyPrep(preprocessing,val_label)
 
     BATCH_SIZE = dataset_config['BATCH']
-    LR = float(dataset_config['LR'])
+    train = tf.data.Dataset.from_tensor_slices((train_data,np.concatenate(
+        [train_data[:,:,:NSWD],train_label[:,:,:NSWD]],-1))).cache().shuffle(50*BATCH_SIZE).batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+
+    val = tf.data.Dataset.from_tensor_slices((val_data,np.concatenate(
+        [val_data[:,:,:NSWD],val_label[:,:,:NSWD]],-1))).cache().shuffle(50*BATCH_SIZE).batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+    
+    del train_data, val_data, train_label, val_label
+    gc.collect()
+    
+
+    LR = float(dataset_config['LR'])*np.sqrt(hvd.size())
     NUM_EPOCHS = dataset_config['MAXEPOCH']
     EARLY_STOP = dataset_config['EARLYSTOP']
-    inputs,outputs = ABCNet(npoint=NPART,nfeat=dataset_config['SHAPE'][2])
+    inputs,outputs = ABCNet(nfeat=dataset_config['SHAPE'][2])
     model = Model(inputs=inputs,outputs=outputs)
-    opt = keras.optimizers.Adam(learning_rate=LR)
-    opt = hvd.DistributedOptimizer(
-        opt, average_aggregated_gradients=True)
+    #opt = keras.optimizers.Adam(learning_rate=LR)
+    opt = keras.optimizers.Lion(learning_rate=LR,beta_1=0.95)
+
+    
+    opt = hvd.DistributedOptimizer(opt)
     model.compile(loss=SWD,
-                  run_eagerly=True,
+                  #run_eagerly=True,
                   optimizer=opt,experimental_run_tf_function=False)
     if flags.load:
         model.load_weights(checkpoint_folder)
@@ -116,8 +95,7 @@ if __name__ == '__main__':
     callbacks = [
         hvd.callbacks.BroadcastGlobalVariablesCallback(0),
         hvd.callbacks.MetricAverageCallback(),            
-        ReduceLROnPlateau(patience=10, factor=0.5,
-                          min_lr=1e-8,verbose=hvd.rank()==0),
+        ReduceLROnPlateau(patience=10, min_lr=1e-7,verbose=hvd.rank()==0),
         EarlyStopping(patience=EARLY_STOP,restore_best_weights=True),
     ]
 
@@ -128,14 +106,12 @@ if __name__ == '__main__':
         callbacks.append(checkpoint)
         print(model.summary())
 
-    # print(int(data_size*flags.frac/BATCH_SIZE),int(data_size*(1-flags.frac)/BATCH_SIZE))
+
     history = model.fit(
-        train_data.batch(BATCH_SIZE),
+        train,
         epochs=NUM_EPOCHS,
-        steps_per_epoch=int(data_size*flags.frac/BATCH_SIZE),
         # steps_per_epoch=1,
-        validation_data=test_data.batch(BATCH_SIZE),
-        validation_steps=int(data_size*(1-flags.frac)/BATCH_SIZE),
+        validation_data=val,
         verbose=1 if hvd.rank()==0 else 0,
         callbacks=callbacks
     )

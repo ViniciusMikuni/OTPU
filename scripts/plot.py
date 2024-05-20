@@ -32,7 +32,6 @@ def TakeClosest(ref,parts,idx=0,npv=None):
         resolution=np.stack([resolution.flatten()[delta_r_mask.flatten()],
                              ref[:,:,0].flatten()[delta_r_mask.flatten()],
                              ref[:,:,1].flatten()[delta_r_mask.flatten()],
-                             ref[:,:,4].flatten()[delta_r_mask.flatten()],
                              npv_tile.flatten()[delta_r_mask.flatten()]
         ],-1)
 
@@ -40,7 +39,6 @@ def TakeClosest(ref,parts,idx=0,npv=None):
         resolution=np.stack([resolution.flatten()[delta_r_mask.flatten()],
                              ref[:,:,0].flatten()[delta_r_mask.flatten()],
                              ref[:,:,1].flatten()[delta_r_mask.flatten()],
-                             ref[:,:,4].flatten()[delta_r_mask.flatten()],
         ],-1)
     #resolution=resolution.flatten()[delta_r_mask.flatten()]
     #print(resolution.shape)
@@ -86,10 +84,6 @@ def PlotResolution(data_dict,plot_folder,process,npv=None):
     eta_binning = np.linspace(0,4,5)
     eta_res = {}
     eta_err={}
-    # thrust_binning = np.linspace(0,1,5)
-    # thrust_res = {}
-    # thrust_err={}
-
     
     npv_binning = np.linspace(0,200,1)
     npv_res = {}
@@ -115,21 +109,10 @@ def PlotResolution(data_dict,plot_folder,process,npv=None):
         pt_err[name]=np.zeros(pt_binning.shape[0]-1)
         eta_res[name]=np.zeros(eta_binning.shape[0]-1)
         eta_err[name]=np.zeros(eta_binning.shape[0]-1)
-        # thrust_res[name]=np.zeros(eta_binning.shape[0]-1)
-        # thrust_err[name]=np.zeros(eta_binning.shape[0]-1)
         npv_res[name]=np.zeros(npv_binning.shape[0]-1)
         npv_err[name]=np.zeros(npv_binning.shape[0]-1)
         
         etapt_res[name]= np.zeros((eta_binning.shape[0]-1,pt_binning.shape[0]-1))
-
-        for i in range(npv_binning.shape[0]-1):
-            mask = (res[:,4]>npv_binning[i]) & (res[:,4]<npv_binning[i+1])
-            # print(i,np.sum(mask))
-            # print(np.quantile(res[:,0][mask],q=[0.25,0.75]))
-            quantiles = np.quantile(np.nan_to_num(res[:,0][mask]),quantile_list)
-            npv_res[name][i] = (quantiles[1]-quantiles[0])*0.5
-            npv_err[name][i] = GetBootErr(np.nan_to_num(res[:,0][mask]),quantile_list)
-
         
         for i in range(pt_binning.shape[0]-1):
             mask = (res[:,1]>pt_binning[i]) & (res[:,1]<pt_binning[i+1])
@@ -146,13 +129,6 @@ def PlotResolution(data_dict,plot_folder,process,npv=None):
             quantiles = np.quantile(res[:,0][mask],quantile_list)
             eta_res[name][i] = (quantiles[1]-quantiles[0])*0.5
             eta_err[name][i] = GetBootErr(np.nan_to_num(res[:,0][mask]),quantile_list)
-
-        # for i in range(thrust_binning.shape[0]-1):
-        #     mask = (np.abs(res[:,3])>thrust_binning[i]) & (np.abs(res[:,3])<thrust_binning[i+1])
-
-        #     quantiles = np.quantile(res[:,0][mask],quantile_list)
-        #     thrust_res[name][i] = (quantiles[1]-quantiles[0])*0.5
-        #     thrust_err[name][i] = GetBootErr(np.nan_to_num(res[:,0][mask]),quantile_list)
 
 
         for i in range(pt_binning.shape[0]-1):
@@ -177,10 +153,6 @@ def PlotResolution(data_dict,plot_folder,process,npv=None):
     eta_x = 0.5*(eta_binning[:-1] + eta_binning[1:])
     fig,ax0 = utils.PlotRoutine(eta_res,xlabel=r'Jet $|\eta|$', ylabel= 'Jet energy resolution',plot_ratio=True,xaxis=eta_x,yerror=eta_err,reference_name='puppi')    
     fig.savefig('{}/resolution_eta_{}.pdf'.format(plot_folder,process), bbox_inches='tight')
-
-    # thrust_x = 0.5*(thrust_binning[:-1] + thrust_binning[1:])
-    # fig,ax0 = utils.PlotRoutine(thrust_res,xlabel=r'Jet thrust', ylabel= 'Jet energy resolution',plot_ratio=True,xaxis=thrust_x,yerror=thrust_err,reference_name='puppi')    
-    # fig.savefig('{}/resolution_thrust_{}.pdf'.format(plot_folder,process))
 
     for key in etapt_res:
         cmap = plt.get_cmap('viridis')
@@ -280,8 +252,8 @@ def PlotMET(data_dict,plot_folder,process):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_folder', default='/global/cfs/cdirs/m3929/SCRATCH/PU/PU/vertex_info', help='Folder containing data and MC files')        
-    #parser.add_argument('--data_folder', default='/pscratch/sd/v/vmikuni/PU/vertex_info', help='Folder containing data and MC files')
+    #parser.add_argument('--data_folder', default='/global/cfs/cdirs/m3929/SCRATCH/PU/PU/vertex_info', help='Folder containing data and MC files')        
+    parser.add_argument('--data_folder', default='/pscratch/sd/v/vmikuni/PU/vertex_info', help='Folder containing data and MC files')
     parser.add_argument('--dataset', default=None, help='dataset to load')
     parser.add_argument('--model', default=None, help='model checkpoint to load')
 
@@ -316,7 +288,7 @@ if __name__ == '__main__':
 
     plot_routines = {
         #'njets':PlotNjet,
-        'pt resolution':PlotResolution,
+        'Resolution plots':PlotResolution,
     }
         
     for plot in plot_routines:
