@@ -206,7 +206,7 @@ if __name__ == '__main__':
         return dataset
     
     for dset in sets:
-        print("Processing" dset)
+        print("Processing",dset)
         dict_dataset[dset] = _dict_data(sets[dset],njets=9) #maximum number of jets
         
     with h5.File(os.path.join(flags.data_folder,"JetInfo_{}_{}".format(checkpoint,dataset)),"w") as h5f:
