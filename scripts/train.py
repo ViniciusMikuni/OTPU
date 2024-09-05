@@ -10,7 +10,7 @@ import argparse
 import h5py as h5
 import utils
 from ABCNet import ABCNet, SWD
-
+from sklearn.utils import shuffle
 import gc
 tf.random.set_seed(1)
 
@@ -50,14 +50,17 @@ if __name__ == '__main__':
 
     train_data = [utils.DataLoader(os.path.join(flags.data_folder,'train_'+dataset),flags.nevts)[0] for dataset in dataset_config['FILES']]
     train_data = np.concatenate(train_data)
+    train_data = shuffle(train_data)
     train_label = [utils.DataLoader(os.path.join(flags.data_folder,'train_'+dataset),flags.nevts)[1] for dataset in dataset_config['FILES']]
     train_label = np.concatenate(train_label)
-
+    train_label = shuffle(train_label)
 
     val_data = [utils.DataLoader(os.path.join(flags.data_folder,'val_'+dataset),flags.nevts)[0] for dataset in dataset_config['FILES']]
     val_data = np.concatenate(val_data)
+    val_data = shuffle(val_data)
     val_label = [utils.DataLoader(os.path.join(flags.data_folder,'val_'+dataset),flags.nevts)[1] for dataset in dataset_config['FILES']]
     val_label = np.concatenate(val_label)
+    val_label = shuffle(val_label)
                 
     train_data = utils.ApplyPrep(preprocessing,train_data)
     val_data = utils.ApplyPrep(preprocessing,val_data)

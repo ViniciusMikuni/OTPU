@@ -1,12 +1,12 @@
 {
     'FILES':['DiJet.h5','TTBar.h5','VBFHinv.h5'],
     'SHAPE':[-1,3200,15],
-    'BATCH':16,
-    'LR':3e-5,
+    'BATCH':32,
+    'LR':1e-5,
     'MAXEPOCH':1000,
     'EARLYSTOP':30,
     'NSWD':9,
     'NPART':3200,
     'PREPFILE':'preprocessing_delta.json',
-    'CHECKPOINT_NAME':'SWDPU_NSWD4_delta'
+    'CHECKPOINT_NAME':'SWDPU_NSWD4_delta_gather'
 }

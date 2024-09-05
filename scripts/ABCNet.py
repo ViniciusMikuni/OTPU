@@ -2,7 +2,7 @@ import tensorflow as tf
 from tensorflow.keras import layers, Input
 import numpy as np
 import tensorflow.keras.backend as K
-
+import horovod.tensorflow as hvd
 
 
 
@@ -43,7 +43,7 @@ def get_encoding(x,projection_dim,use_bias=True):
 
 
 def ABCNet(nfeat=1,
-           k = 20,
+           k = 30,
            projection_dim = 64,
            nlayers = 3):
     inputs = Input(shape=(None,nfeat))
@@ -65,7 +65,7 @@ def ABCNet(nfeat=1,
         encoded = layers.Add()([x3,x2])*mask
 
     encoded = encoded + skip_connection
-    outputs = layers.Dense(1,activation='sigmoid')(encoded)
+    outputs = layers.Dense(1,activation='sigmoid',kernel_initializer="zeros")(encoded)
     return inputs,outputs
 
 
@@ -90,7 +90,9 @@ def GAP(points,
     return updates, updates_edges
     
 
-def SWD(y_true, y_pred,nprojections=128,use_charge=True):
+def SWD(y_true, y_pred,nprojections=256,use_charge=True):
+    y_true = hvd.allgather(y_true)
+    y_pred = hvd.allgather(y_pred)
     pu_pfs = y_true[:,:,:y_true.shape[2]//2]
     nopu_pfs = y_true[:,:,y_true.shape[2]//2:]
 
@@ -106,42 +108,63 @@ def SWD(y_true, y_pred,nprojections=128,use_charge=True):
 
 
     def _getSWD(pu_pf,nopu_pf):    
-        proj = tf.random.normal(shape=[tf.shape(pu_pf)[0],tf.shape(pu_pf)[2], nprojections])
+        proj = tf.random.normal(shape=[tf.shape(pu_pf)[1], nprojections])
         proj *= tf.math.rsqrt(tf.reduce_sum(tf.square(proj), 1, keepdims=True))
 
         p1 = tf.matmul(nopu_pf, proj) #BxNxNPROJ
         p2 = tf.matmul(pu_pf, proj) #BxNxNPROJ
-        p1 = sort_rows(p1, tf.shape(pu_pf)[1])
-        p2 = sort_rows(p2, tf.shape(pu_pf)[1])
+        p1 = sort_rows(p1, tf.shape(pu_pf)[0])
+        p2 = sort_rows(p2, tf.shape(pu_pf)[0])
         
         wdist = tf.reduce_mean(tf.square(p1 - p2),-1)
         return wdist
+
     
     def _getMET(particles):
         px = tf.abs(particles[:,:,2])*tf.math.cos(particles[:,:,1])
         py = tf.abs(particles[:,:,2])*tf.math.sin(particles[:,:,1])
-        met = tf.stack([px,py],-1)
+        pz = tf.abs(particles[:,:,2])*tf.math.sinh(particles[:,:,0])
+        met = tf.stack([px,py,pz,particles[:,:,2]],-1)
         return met
 
 
     met_pu = tf.reduce_sum(_getMET(pu_pfs)*y_pred,1)
     met_nopu = tf.reduce_sum(_getMET(nopu_pfs),1)
-    met_mse = tf.reduce_sum(tf.square(met_pu[:,:2] - met_nopu[:,:2]),-1)
+    met_mse = tf.reduce_mean(_getSWD(met_pu,met_nopu))
+    
+    
+    # met_pu = tf.reduce_sum(_getMET(pu_pfs)*y_pred,1)
+    # met_pu = tf.sqrt(tf.reduce_sum(met_pu**2+1e-9,-1))
+    # met_nopu = tf.reduce_sum(_getMET(nopu_pfs),1)
+    # met_nopu = tf.sqrt(tf.reduce_sum(met_nopu**2+1e-9,-1))
+    # #met_mse = tf.reduce_sum(tf.square(met_pu[:,:2] - met_nopu[:,:2]),-1)
+    
+    # met_mse = tf.reduce_mean(tf.square(tf.sort(met_pu,-1) - tf.sort(met_nopu,-1)),-1)
 
 
     if use_charge:
-        wdist_charge = _getSWD(pu_pfs*charge_pu_mask,nopu_pfs*charge_nopu_mask)
-        wdist_neutral = _getSWD(pu_pfs*tf.cast(charge_pu_mask==0,tf.float32),
-                                nopu_pfs*tf.cast(charge_nopu_mask==0,tf.float32))
+        wdist_charge = _getSWD(tf.reshape(pu_pfs*charge_pu_mask,(-1,tf.shape(pu_pfs)[-1])),
+                               tf.reshape(nopu_pfs*charge_nopu_mask,(-1,tf.shape(pu_pfs)[-1])))
+        wdist_neutral = _getSWD(tf.reshape(pu_pfs*tf.cast(charge_pu_mask==0,tf.float32),(-1,tf.shape(pu_pfs)[-1])),
+                                tf.reshape(nopu_pfs*tf.cast(charge_nopu_mask==0,tf.float32),(-1,tf.shape(pu_pfs)[-1])))
         wdist = wdist_charge + wdist_neutral
     else:
-        wdist = _getSWD(pu_pfs,nopu_pfs)
+        wdist = _getSWD(
+            tf.reshape(pu_pfs,(-1,tf.shape(pu_pfs)[-1])),
+            tf.reshape(nopu_pfs,(-1,tf.shape(pu_pfs)[-1])))
         
     notzero = tf.reduce_sum(tf.where(wdist>0,tf.ones_like(wdist),tf.zeros_like(wdist)))    
-    return 1e3*tf.reduce_sum(wdist)/tf.reduce_sum(notzero) + tf.reduce_mean(met_mse)
+    return 1e3*tf.reduce_sum(wdist)/tf.reduce_sum(notzero) + met_mse
+#+ met_mse
+#+ tf.reduce_mean(met_mse)
 
     
+# def sort_rows(matrix, num_rows):
+#     matrix_T = tf.transpose(matrix, [0,2,1])
+#     sorted_matrix_T,index_matrix = tf.math.top_k(matrix_T, num_rows)    
+#     return tf.transpose(sorted_matrix_T, [0,2, 1])
+
 def sort_rows(matrix, num_rows):
-    matrix_T = tf.transpose(matrix, [0,2,1])
+    matrix_T = tf.transpose(matrix, [1,0])
     sorted_matrix_T,index_matrix = tf.math.top_k(matrix_T, num_rows)    
-    return tf.transpose(sorted_matrix_T, [0,2, 1])
+    return tf.transpose(sorted_matrix_T, [1,0])

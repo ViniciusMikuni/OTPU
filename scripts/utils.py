@@ -238,7 +238,7 @@ def ApplyPrep(param_dict,data,use_log=False):
     data_flat = (data_flat-param_dict['mean'][:shape[-1]])/param_dict['std'][:shape[-1]]
     data_flat*=mask
     
-    return data_flat.reshape(shape)
+    return data_flat.reshape(shape).astype(np.float32)
 
 def LoadJson(file_name):
     import json,yaml
